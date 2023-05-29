@@ -1,0 +1,880 @@
+---
+title: "ProjectAkhil"
+author: "Akhil Pratyush"
+date: "2023-04-30"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+r = getOption("repos")
+r["CRAN"] = "http://cran.us.r-project.org"
+options(repos = r)
+
+install.packages("ISLR2")
+install.packages("boot")
+library(boot)
+library(ISLR2)
+library(grid)
+library(MASS)
+library(dplyr)
+library(glmnet)
+library(stats)
+library(caret)
+library(splines)
+library(tidyr)
+```
+
+```{r clean the data}
+# Load the dataset
+data <- read.csv("./cardio_train.csv", sep=";")
+
+# Remove rows with missing values
+data <- na.omit(data)
+
+inTrain <- createDataPartition(data$cardio, p = 0.8, list = F)
+
+train <- data[inTrain, ]
+test <- data[-inTrain, ]
+
+row.names(train) <- 1:nrow(train)
+row.names(test) <- 1:nrow(test)
+
+rm(inTrain)
+rm(data)
+
+```
+
+```{r structure of the data}
+str(train)
+
+#After inspecting the structure, it’s clear that some variables need to converted to a factor. Additionally, changing the factor levels from numeric to categories will make exploratory analysis easier. The data description does not clarify which numeric values correspond to males and females. We can calculate the average height for each subset and hopefully the large sample size will provide a clear answer.
+```
+
+```{r }
+# WHAT NUMERIC VALUE REPRESENTS MALES AND WHAT REPRESENTS FEMALES?
+# WE CAN CALCULATE THE AVERGAE HEIGHT AND LET LARGE SAMPLE SIZES ANSWER THIS 
+train %>% 
+  group_by(gender) %>% 
+  dplyr::summarise(mean = mean(height))
+
+
+```
+
+```{r}
+#LDA and QDA
+library(MASS)
+set.seed(1234)
+
+# Split the data into predictor and response variables
+x <- train[, -ncol(train)]
+y <- train$cardio
+# x <- apply(x, 2, function(x) as.numeric(as.character(x)))
+
+# Fit the LDA model
+lda_model <- lda(x, y)
+
+# Print the model summary
+print(lda_model)
+
+# Fit the QDA model
+qda_model <- qda(x, y)
+
+# Print the model summary
+print(qda_model)
+
+# Make predictions on the training data
+ pred_lda <- predict(lda_model, x)$class
+
+# Print the confusion matrix
+(cm_lda <- caret::confusionMatrix(as.factor(pred_lda), as.factor(y)))
+
+# Make predictions on the training data
+pred_qda <- predict(qda_model, x)$class
+
+# Print the confusion matrix
+(cm_qda <- caret::confusionMatrix(as.factor(pred_qda), as.factor(y)))
+
+```
+
+```{r}
+# CHANGING NUMERIC LABELS TO CATEGORIES
+train$cardio <- as.factor(train$cardio)
+train$gender <- factor(train$gender, 1:2, c("Female", "Male"))
+train$smoke <- factor(train$smoke, 0:1, c("No", "Yes"))
+train$active <- factor(train$active, 0:1, c("No", "Yes"))
+train$alco <- factor(train$alco, 0:1, c("No", "Yes")) 
+train$cholesterol <- 
+factor(train$cholesterol, 1:3, c("Normal", "Above Normal", "Well Above Normal"))
+train$gluc <- 
+factor(train$gluc, 1:3, c("Normal", "Above Normal", "Well Above Normal"))
+
+
+```
+
+#There will likely be covariance between height and weight and between systolic blood pressure, ap_lo, and diastolic blood pressure, ap_lo. To circumvent this, I created two features: body mass index, bmi, and mean arterial pressure, map.
+
+```{r}
+# FEATURE ENGINEERING
+train$bmi <- round((train$weight / (train$height / 100)^2), 0)
+train$map <- round(((2*train$ap_lo) + train$ap_hi) / 3, 0)
+
+# CHANGING SCALES
+train$age <- round(train$age / 365, 0)
+train$height <- round(train$height / 2.54, 0)
+train$weight <- round(train$weight * 2.2, 0)
+
+# FEATURE ENGINEERING
+test$bmi <- round((test$weight / (test$height / 100)^2), 0)
+test$map <- round(((2*test$ap_lo) + test$ap_hi) / 3, 0)
+
+# CHANGING SCALES
+test$age <- round(test$age / 365, 0)
+test$height <- round(test$height / 2.54, 0)
+test$weight <- round(test$weight * 2.2, 0)
+
+train1 <- train
+
+```
+
+```{r}
+#boxplots
+par(mfrow = c(2,2))
+boxplot(train$age)
+boxplot(train$height)
+boxplot(train$weight)
+boxplot(train$ap_hi)
+
+
+
+par(mfrow = c(1,3))
+boxplot(train$ap_lo)
+boxplot(train$map)
+boxplot(train$bmi)
+
+```
+
+```{r }
+# REMOVING OUTLIERS AND UNUSUAL VALUES
+remove <- row.names(train[train$age < 40 |
+                          train$height < 48 |
+                          train$height > 80 |
+                          train$bmi > 80 |
+                          train$bmi < 10 |
+                          train$weight < 50 | 
+                          train$ap_hi < 80 |
+                          train$ap_hi > 220 |
+                          train$ap_lo < 20 |
+                          train$ap_lo > 200 |
+                          train$map > 160, ])
+
+remove <- as.numeric(remove)
+
+# REMOVING OUTLIERS AND UNUSUAL VALUES
+remove <- row.names(test[test$age < 40 |
+                          test$height < 48 |
+                          test$height > 80 |
+                          test$bmi > 80 |
+                          test$bmi < 10 |
+                          test$weight < 50 | 
+                          test$ap_hi < 80 |
+                          test$ap_hi > 220 |
+                          test$ap_lo < 20 |
+                          test$ap_lo > 200 |
+                          test$map > 160, ])
+
+remove <- as.numeric(remove)
+
+```
+
+```{r}
+# REMOVE VALUES WHERE DIASTOLIC PRESSURE IS GREATER THAN SYSTOLIC 
+train$ap_lo <- ifelse(train$ap_lo >= train$ap_hi, NA, train$ap_lo)
+
+
+
+```
+
+```{r}
+# CLEANED DATASET
+train <- train[-remove, ]
+train <- train[!is.na(train$ap_lo), ]
+
+# PERCENT OF DATA REMOVED
+round((length(remove)+length(train[is.na(train$ap_lo),]))/ nrow(train) * 100, 2)
+
+
+
+```
+
+```{r}
+summary(train[ ,-c(1, 3, 8:13)])
+summary(train[ ,c(3, 8:13)])
+
+```
+
+```{r}
+#assess covariance using a correlation matrix for continuous variables
+cont_vars <- c("age", "height", "weight", "ap_hi", "ap_lo", "bmi", "map")
+M1 <- cor(train[ ,cont_vars])
+print(round(M1, 2))
+
+corrplot::corrplot(M1, "square", "upper")
+
+#As suspected, systolic and diastolic blood pressure are correlated. Instead, I’ll use the map, mean arterial pressure. Surprisingly, height and weight are not very correlated (perhaps because the dataset consists of all adults, and the relationship is much stronger during childhood and adolescence). In any case, I’ll still use bmi, body mass index, instead of height and weight separately.
+
+```
+
+```{r}
+M2 <- cor(train[ ,c("age", "bmi", "map")])
+corrplot::corrplot(M2, "square", "upper")
+
+```
+
+```{r}
+# BINNING CONTINUOUS VARIABLES FOR VISUALIZATION
+train$age_bin <- cut(train$age, breaks = 5)
+train$weight_bin <- cut(train$weight, breaks = seq(100, 300, 20))
+train$bmi_bin <- cut(train$bmi, breaks = seq(15, 50, 5))
+train$height_bin <- cut(train$height, breaks = seq(55, 75, 5))
+train$ap_hi_bin <- cut(train$ap_hi, breaks = seq(100, 200, 10))
+train$ap_lo_bin <- cut(train$ap_lo, breaks = seq(50, 130, 20))
+train$map_bin <- cut(train$map, breaks = seq(60, 140, 10))
+
+
+```
+
+```{r}
+# MAP BIN
+ggplot(train) +
+ aes(x = map_bin, fill = cardio) +
+ geom_bar(position = "dodge") +
+ scale_fill_brewer(palette = "Accent") +
+ labs(x = "Mean Arterial Pressure", y = "Count", fill = "CVD") +
+ theme_minimal()
+
+```
+
+```{r}
+# BMI BIN
+ggplot(train) +
+ aes(x = bmi_bin, fill = cardio) +
+ geom_bar(position = "dodge") +
+ scale_fill_brewer(palette = "Set2") +
+ labs(x = "Body Mass Index", y = "Count", fill = "CVD") +
+ theme_minimal()
+```
+
+```{r}
+# AGE BIN
+ggplot(train) +
+ aes(x = age_bin, fill = cardio) +
+ geom_bar(position = "dodge") +
+ scale_fill_brewer(palette = "Pastel1") +
+ labs(x = "Age", y = "Count", fill = "CVD") +
+ theme_minimal()
+```
+
+```{r}
+
+library(gridExtra)
+grid.arrange(nrow = 1,
+ggplot(train) +
+ aes(x = cardio, y = map, fill = cardio) +
+ geom_boxplot(show.legend = F) +
+ scale_fill_brewer(palette = "Set1") +
+ labs(x = "CVD", y = "Mean Arterial Pressure", fill = "CVD") +
+ theme_minimal(),
+ggplot(train) +
+ aes(x = cardio, y = age, fill = cardio) +
+ geom_boxplot(show.legend = F) +
+ scale_fill_viridis_d(option = "cividis") +
+ labs(x = "CVD", y = "Age", fill = "CVD") +
+ theme_minimal()
+)
+
+
+grid.arrange(
+ggplot(train) +
+ aes(x = age, y = map, colour = cardio) +
+ geom_point(size = 1L) +
+ scale_color_brewer(palette = "Set1") +
+ labs(x = "Age", y = "Mean Arterial Pressure", color = "CVD") +
+ theme_minimal(),
+ggplot(train) +
+ aes(x = map, y = bmi, colour = cardio) +
+ geom_point(size = 1L) +
+ scale_color_brewer(palette = "Set1") +
+ labs(x = "Mean Arterial Pressure", y = "Body Mass Index", color = "CVD") +
+ theme_minimal()
+)
+
+```
+
+```{r}
+library(ggthemes)
+#categorical variables
+ggplot(train) +
+ aes(x = gluc, fill = cardio) +
+ geom_bar(position = "dodge") +
+ scale_fill_brewer(palette = "Pastel1") +
+ labs(x = "Glucose", y = "Count", fill = "CVD") +
+ theme_minimal()
+
+ggplot(train) +
+ aes(x = cholesterol, fill = cardio) +
+ geom_bar(position = "dodge") +
+ labs(x = "Cholesterol", y = "Count", fill = "CVD") +
+ theme_minimal()
+
+ggplot(train) +
+ aes(x = gender, fill = cardio) +
+ geom_bar(position = "dodge") +
+ scale_fill_brewer(palette = "Accent") +
+ labs(x = "Gender", y = "Count", fill = "CVD") +
+ theme_minimal()
+
+ggplot(train) +
+ aes(x = alco, fill = cardio) +
+ geom_bar(position = "dodge") +
+ scale_fill_brewer(palette = "Pastel2") +
+ labs(x = "Alcohol Consumption", y = "Cigarette Smoking", fill = "CVD") +
+ theme_minimal() +
+ facet_grid(vars(smoke), vars(), scales = "free_y")
+
+ggplot(train) +
+ aes(x = active, fill = cardio) +
+ geom_bar(position = "dodge") +
+ scale_fill_brewer(palette = "Set3") +
+ labs(x = "Physical Activity", y = "Count", fill = "CVD") +
+ theme_minimal()
+
+ggplot(train) +
+ aes(x = gluc, fill = cardio) +
+ geom_bar(position = "dodge") +
+ scale_fill_brewer(palette = "Set2") +
+ labs(x = "Glucose ", y = "Cholesterol", fill = "CVD") +
+ theme_minimal() +
+ facet_grid(vars(cholesterol), vars(), scales = "free_y")
+
+#this dataset consists of well-known risk factors for cardiovascular disease, and, as such, the exploratory analysis is not very interesting. It’s already well-established in the literature that cholesterol, diabetes, age, blood pressure, etc. will contribute to the development of cardiovascular disease. Despite this, the EDA still provided some useful information. Smoking, activity status, and alcohol consumption were not very strong predictors. These could potentially be removed from modeling. An interaction term of cholesterol and glucose may be more insightful. Let’s begin preparing the data for modeling by inspecting the least frequent outcomes.
+
+```
+
+```{r}
+# ALL VARIABLES
+train %>% 
+  dplyr::select(gender, cholesterol, smoke, gluc, alco, active) %>%
+  group_by_all() %>% 
+  dplyr::summarise(count = n()) %>% 
+  arrange(count) %>% 
+  head()
+
+
+# REMOVE SMOKE AND GENDER
+train %>% 
+  dplyr::select(cholesterol, gluc, active, alco) %>%
+  group_by_all() %>% 
+  dplyr::summarise(count = n()) %>% 
+  arrange(count) %>% 
+  head()
+
+# REMOVE SMOKE, GENDER AND ALCOHOL
+train %>% 
+  dplyr::select(cholesterol, gluc, active) %>%
+  group_by_all() %>% 
+  dplyr::summarise(count = n()) %>% 
+  arrange(count) %>% 
+  head()
+
+```
+
+```{r}
+# PREDICTORS BEING USED FOR MODELING
+train <- train[ ,c("age", "cholesterol", "gluc", "active", "bmi", "map", "cardio")]
+
+```
+
+```{r}
+plot_confusion <- function(cm, model_name) {
+  # Create a fourfold plot of the confusion matrix
+  fourfoldplot(cm$table, color = c("#CC6666", "#66CC66"), conf.level = 0, main = paste0("Confusion Matrix - ", model_name))
+  
+  # Add text to the plot
+  text(-1.5, -0.5, paste0("Accuracy = ", round(cm$overall['Accuracy'], 2)), cex = 0.8)
+  text(1.5, 0.5, paste0("Sensitivity = ", round(cm$byClass['Sensitivity'], 2)), cex = 0.8)
+  text(0.5, -1.5, paste0("Specificity = ", round(cm$byClass['Specificity'], 2)), cex = 0.8)
+  text(-0.5, 0.5, paste0("PPV = ", round(cm$byClass['Pos Pred Value'], 2)), cex = 0.8)
+  # text(-1.5, -0.5, paste0("NPV = ", round(cm$byClass['Neg Pred Value'], 2)), cex = 0.8)
+}
+
+
+```
+
+```{r}
+#LOGISTIC REGRESSION
+mod1 <- glm(cardio ~ ., family = "binomial", data = train)
+summary(mod1)
+
+
+```
+
+```{r}
+pred_mod1 <- ifelse(predict.glm(mod1, type = "response") < 0.5, 0, 1)
+(cm_1 <- caret::confusionMatrix(as.factor(pred_mod1), train$cardio))
+
+
+
+```
+```{r}
+library(pROC)
+roc_curve <- roc(train$cardio, predict.glm(mod1, type = "response"))
+plot(roc_curve, main = "ROC Curve", print.auc = TRUE, auc.polygon = TRUE,
+     grid=c(0.1, 0.2), grid.col = "lightgray", max.auc.polygon = TRUE)
+
+```
+
+```{r}
+par(mfrow = c(1,1))
+
+# MODEL 1
+fourfoldplot(cm_1$table, color = c("#CC6666", "#99CC99"),
+             conf.level = 0, margin = 1, main = "Accuracy: 71.8%")
+
+```
+
+```{r}
+#RIDGE REGRESSION
+set.seed(1234)
+
+formula <- as.formula("cardio ~ cholesterol + gluc + active + bmi + map")
+# Convert the training data to a matrix
+train_matrix <- model.matrix(formula, data = train)
+
+# Create the response vector
+y <- train[, "cardio"]
+
+# Perform ridge regression using the glmnet function
+ridge_model <- cv.glmnet(train_matrix, y, family = "binomial", alpha = 1)
+
+# Print the coefficients for the ridge model
+print(coef(ridge_model))
+
+# Make predictions on the training data
+pred_ridge <- predict(ridge_model, train_matrix, type = "response")
+pred_ridge_class <- ifelse(pred_ridge > 0.5, 1, 0)
+
+# Calculate the accuracy
+accuracy_ridge <- mean(pred_ridge_class == y)
+print(paste0("Accuracy of ridge model: ", round(accuracy_ridge * 100, 2), "%"))
+
+# Print the confusion matrix
+cm_ridge <- caret::confusionMatrix(as.factor(pred_ridge_class), y)
+print(cm_ridge)
+
+# Calculate the accuracy
+accuracy_ridge <- mean(pred_ridge_class == y)
+print(paste0("Accuracy of ridge model: ", round(accuracy_ridge * 100, 2), "%"))
+
+
+```
+```{r}
+library(ROCR)
+
+# Make predictions on the training data
+pred_ridge <- predict(ridge_model, train_matrix, type = "response")
+
+# Create a prediction object for the ROCR package
+pred_obj <- prediction(pred_ridge, y)
+
+# Calculate the AUC
+auc <- performance(pred_obj, measure = "auc")@y.values[[1]]
+print(paste0("AUC: ", round(auc, 2)))
+
+# Plot the ROC curve
+perf <- performance(pred_obj, measure = "tpr", x.measure = "fpr")
+plot(perf)
+
+# Find the minimum lambda value
+min_lambda <- ridge_model$lambda.min
+print(paste0("Minimum lambda value: ", min_lambda))
+
+# Plot the cross-validation error as a function of log(lambda)
+plot(ridge_model, main="Cross-validation error for RIDGE model")
+
+# Add vertical lines for the minimum lambda value and the 1 standard error rule
+abline(v = log(ridge_model$lambda.min), col = "red")
+abline(v = log(ridge_model$lambda.1se), col = "blue")
+
+# Add a legend
+legend("topright", legend = c("Minimum lambda", "1 standard error rule"), 
+       col = c("red", "blue"), lty = 1)
+```
+
+```{r}
+#LASSO REGRESSION
+set.seed(1234)
+
+formula <- as.formula("cardio ~ cholesterol + gluc + active + bmi + map")
+
+
+# Convert the training data to a matrix
+train_matrix <- model.matrix(formula, data = train)
+
+# Create the response vector
+y <- train[, "cardio"]
+
+# Perform ridge regression using the glmnet function
+lasso_model <- cv.glmnet(train_matrix, y, family = "binomial", alpha = 0)
+
+# Print the coefficients for the ridge model
+print(coef(lasso_model))
+
+# Make predictions on the training data
+pred_lasso <- predict(lasso_model, train_matrix, type = "response")
+pred_lasso_class <- ifelse(pred_lasso > 0.5, 1, 0)
+
+# Calculate the accuracy
+accuracy_lasso <- mean(pred_lasso_class == y)
+print(paste0("Accuracy of lasso model: ", round(accuracy_lasso * 100, 2), "%"))
+
+# Print the confusion matrix
+cm_lasso <- caret::confusionMatrix(as.factor(pred_lasso_class), y)
+print(cm_lasso)
+
+# Calculate the accuracy
+accuracy_lasso <- mean(pred_lasso_class == y)
+print(paste0("Accuracy of lasso model: ", round(accuracy_lasso * 100, 2), "%"))
+
+```
+```{r}
+# Make predictions on the training data
+pred_lasso <- predict(lasso_model, train_matrix, type = "response")
+
+# Create a prediction object for the ROCR package
+pred_obj <- prediction(pred_lasso, y)
+
+# Calculate the AUC
+auc <- performance(pred_obj, measure = "auc")@y.values[[1]]
+print(paste0("AUC: ", round(auc, 2)))
+
+# Plot the ROC curve
+perf <- performance(pred_obj, measure = "tpr", x.measure = "fpr")
+plot(perf)
+
+# Find the minimum lambda value
+min_lambda <- lasso_model$lambda.min
+print(paste0("Minimum lambda value: ", min_lambda))
+
+
+
+
+
+```
+
+```{r}
+# Plot the cross-validation error
+plot(lasso_model)
+
+plot(ridge_model)
+
+```
+
+```{r}
+
+# Load the glmnet package
+library(glmnet)
+
+# Define the formula
+formula <- as.formula("cardio ~ cholesterol + gluc + active + bmi + map")
+
+# Convert the training data to a matrix
+train_matrix <- model.matrix(formula, data = train)
+
+# Create the response vector
+y <- train[, "cardio"]
+
+# Perform lasso regression using cross-validation
+lasso_model <- cv.glmnet(train_matrix, y, family = "binomial", alpha = 1, plot = TRUE)
+
+# Print the coefficients for the lasso model
+print(coef(lasso_model))
+
+# Find the minimum lambda value
+min_lambda <- lasso_model$lambda.min
+print(paste0("Minimum lambda value: ", min_lambda))
+
+# Make predictions on the training data
+pred_lasso <- predict(lasso_model, train_matrix, type = "response")
+pred_lasso_class <- ifelse(pred_lasso > 0.5, 1, 0)
+
+# Calculate the accuracy
+accuracy_lasso <- mean(pred_lasso_class == y)
+print(paste0("Accuracy of lasso model: ", round(accuracy_lasso * 100, 2), "%"))
+
+# Print the confusion matrix
+cm_lasso <- caret::confusionMatrix(as.factor(pred_lasso_class), y)
+print(cm_lasso)
+
+# Plot the cross-validation error as a function of log(lambda)
+plot(lasso_model, main="Cross-validation error for LASSO model")
+
+# Add vertical lines for the minimum lambda value and the 1 standard error rule
+abline(v = log(lasso_model$lambda.min), col = "red")
+abline(v = log(lasso_model$lambda.1se), col = "blue")
+
+# Add a legend
+legend("topright", legend = c("Minimum lambda", "1 standard error rule"), 
+       col = c("red", "blue"), lty = 1)
+
+```
+
+
+
+```{r}
+#DECISION TREE
+# Load the rpart package
+library(rpart)
+
+# Convert the training data to a matrix
+train_matrix <- data.frame(train)
+
+# Create the model formula
+# Create the model formula without the intercept
+model_formula <- as.formula(paste("cardio ~ . - 1"))
+
+
+# Build the decision tree model
+tree_model <- rpart(model_formula, data = train_matrix, method = "class")
+
+# Print the decision tree model
+print(tree_model)
+
+# Make predictions on the training data
+pred_tree <- predict(tree_model, train_matrix, type = "class")
+
+# Calculate the confusion matrix
+cm_tree <- caret::confusionMatrix(as.factor(pred_tree), train$cardio)
+print(cm_tree)
+
+
+# Load the rpart.plot package
+library(rpart.plot)
+
+# Plot the decision tree
+rpart.plot(tree_model, type = 2, extra = 1)
+
+ct_tree <- as.table(cm_tree$table)
+fourfoldplot(ct_tree, color = c("#CC6666", "#99CC99"),
+             conf.level = 0, margin = 1, main = "Accuracy: 71.36 %")
+
+
+```
+
+
+```{r}
+#RANDOM FOREST
+# Load the randomForest package
+library(randomForest)
+
+
+
+# Create a copy of the original dataset
+train_rf <- train1
+
+# Convert categorical variables to factors
+# train_rf$gender <- as.factor(train_rf$gender)
+train_rf$cholesterol <- as.factor(train_rf$cholesterol)
+train_rf$gluc <- as.factor(train_rf$gluc)
+# train_rf$smoke <- as.factor(train_rf$smoke)
+# train_rf$alco <- as.factor(train_rf$alco)
+train_rf$active <- as.factor(train_rf$active)
+
+# Remove the id column
+train_rf$id <- NULL
+
+# Fit the random forest model
+rf_model <- randomForest(cardio ~ ., data = train_rf, ntree = 500, mtry = 5, importance = TRUE)
+
+# Print the model summary
+print(rf_model)
+
+# Make predictions on the training data
+pred_rf <- predict(rf_model, train_rf)
+
+# Print the confusion matrix
+(cm_rf <- caret::confusionMatrix(as.factor(pred_rf), train_rf$cardio))
+
+
+
+# Calculate the accuracy
+accuracy_rf <- sum(diag(cm_rf$table)) / sum(cm_rf$table)
+print(paste0("Accuracy of random forest model: ", round(accuracy_rf * 100, 2), "%"))
+
+
+rf_tree <- as.table(cm_rf$table)
+fourfoldplot(rf_tree, color = c("#CC6666", "#99CC99"),
+             conf.level = 0, margin = 1, main = "Accuracy: 83.3 %")
+
+# Plot the ROC curve
+roc_obj <- roc(train_rf$cardio, predict(rf_model, train_rf, type = "prob")[,2])
+plot(roc_obj, main = "ROC Curve - Random Forest")
+
+# Calculate the AUC score
+auc_score <- auc(roc_obj)
+print(paste0("AUC score of random forest model: ", round(auc_score, 2)))
+
+
+```
+
+
+
+```{r}
+#KNN
+set.seed(123)
+
+# Make a copy of the train data
+train_copy <- train
+
+# Remove missing values from the train data copy
+train_copy <- na.omit(train_copy)
+
+# Split the train data copy into train and test sets
+train_index <- createDataPartition(train_copy$cardio, p = 0.8, list = FALSE)
+train_set <- train_copy[train_index, ]
+test_set <- train_copy[-train_index, ]
+
+# Create formula for the outcome and predictors
+formula <- as.formula("cardio ~ .")
+
+# Train the KNN model on the training data
+library(caret)
+knn_model <- train(formula, data = train_set, method = "knn", trControl = trainControl(method = "cv", number = 5), preProcess = c("center", "scale"), tuneLength = 5)
+
+# Use the KNN model to predict the test data
+knn_pred <- predict(knn_model, newdata = test_set)
+
+# Print the confusion matrix
+knn_cm <- confusionMatrix(knn_pred, test_set$cardio)
+
+
+
+```
+
+```{r}
+
+knn_cm
+# Extract the confusion matrix table
+cm_table <- knn_cm$table
+
+fourfoldplot(cm_table, color = c("#CC6666", "#99CC99"),
+             conf.level = 0, margin = 1, main = "Accuracy: 71.3%")
+
+# Get the predicted probabilities from the KNN model
+knn_prob <- predict(knn_model, newdata = test_set, type = "prob")
+
+# Create a prediction object using the predicted probabilities and actual outcomes
+knn_pred_obj <- prediction(knn_prob[, 2], test_set$cardio)
+
+# Create a performance object using the prediction object
+knn_perf <- performance(knn_pred_obj, "tpr", "fpr")
+
+# Plot the ROC curve
+plot(knn_perf, main = "ROC Curve for KNN Model")
+
+# Calculate the AUC
+auc <- performance(knn_pred_obj, "auc")@y.values[[1]]
+
+# Print the AUC value
+cat("AUC:", round(auc, 2))
+```
+
+
+
+
+
+
+```{r}
+#GRADIENT BOOSTING
+set.seed(123)
+
+# Make a copy of the train data
+train_copy <- train
+
+# Remove missing values from the train data copy
+train_copy <- na.omit(train_copy)
+
+# Split the train data copy into train and test sets
+train_index <- createDataPartition(train_copy$cardio, p = 0.8, list = FALSE)
+train_set <- train_copy[train_index, ]
+test_set <- train_copy[-train_index, ]
+
+# Create formula for the outcome and predictors
+formula <- as.formula("cardio ~ .")
+
+# Train the Gradient Boosting model on the training data
+library(caret)
+gbm_model <- train(formula, data = train_set, method = "gbm", trControl = trainControl(method = "cv", number = 5), preProcess = c("center", "scale"), tuneLength = 5, verbose = FALSE)
+
+# Use the Gradient Boosting model to predict the test data
+gbm_pred <- predict(gbm_model, newdata = test_set)
+
+# Print the confusion matrix for Gradient Boosting model
+gbm_cm <- confusionMatrix(gbm_pred, test_set$cardio)
+print(gbm_cm)
+
+
+
+
+```
+```{r}
+#BAGGING
+set.seed(123)
+
+# Make a copy of the train data
+train_copy <- train
+
+# Remove missing values from the train data copy
+train_copy <- na.omit(train_copy)
+
+# Split the train data copy into train and test sets
+train_index <- createDataPartition(train_copy$cardio, p = 0.8, list = FALSE)
+train_set <- train_copy[train_index, ]
+test_set <- train_copy[-train_index, ]
+
+# Create formula for the outcome and predictors
+formula <- as.formula("cardio ~ .")
+
+# Train the Bagging model on the training data
+library(caret)
+bag_model <- train(formula, data = train_set, method = "treebag", trControl = trainControl(method = "cv", number = 5), preProcess = c("center", "scale"), tuneLength = 5, verbose = FALSE)
+
+# Use the Bagging model to predict the test data
+bag_pred <- predict(bag_model, newdata = test_set)
+
+# Print the confusion matrix for Bagging model
+bag_cm <- confusionMatrix(bag_pred, test_set$cardio)
+print(bag_cm)
+
+# Remove train_set and test_set from the global environment
+rm(train_set, test_set)
+
+
+```
+```{r}
+#OUTPUT PLOTS
+
+# Create the plots for each model
+plot_1 <- plot_confusion(cm_1, "Logistic Regression")
+plot_lda <- plot_confusion(cm_lda, "LDA")
+plot_qda <- plot_confusion(cm_qda, "QDA")
+plot_knn <- plot_confusion(knn_cm, "KNN")
+plot_tree <- plot_confusion(cm_tree, "Decision Tree")
+plot_ridge <- plot_confusion(cm_ridge , "Ridge Regression")
+plot_lasso <- plot_confusion(cm_lasso , "Lasso Regression")
+plot_rf <- plot_confusion(cm_rf, "Random Forest")
+plot_gbm <- plot_confusion(gbm_cm, "Gradient Boost")
+plot_bag <- plot_confusion(bag_cm , "Bagging")
+
+```
